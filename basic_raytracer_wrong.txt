@@ -1,0 +1,138 @@
+#include "trax.hpp"
+
+#define TRI_N_WORDS 11 // 11 words for each triangle
+
+// Utility function to store a color at a pixel offset in the frame buffer
+inline void StorePixel(const int &fb, const int &pixel, const float &r, const float &g, const float &b) {
+  storef(r, fb + pixel*3, 0);
+  storef(g, fb + pixel*3, 1);
+  storef(b, fb + pixel*3, 2);
+}
+
+inline float normalize(float* vec){
+    float norm = sqrt(vec[1]*vec[1] + vec[2]*vec[2] + vec[0]*vec[0]);
+    vec[0] /= norm;
+    vec[1] /= norm;
+    vec[2] /= norm;
+    return norm;
+}
+
+inline float dot(const float* v1, const float* v2) {
+    return v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2];
+}
+
+inline float* cross(const float* v1, const float* v2) {
+
+    float res[] = {v1[1]*v2[2] - v2[1]*v1[2],
+                -v1[0]*v2[2] + v2[0]*v1[2],
+                v1[0]*v2[1] - v1[1]*v2[0]};
+
+    return res;
+}
+
+// add two vectors
+inline float* add(const float* v1, const float* v2) {
+
+    float res[] = {v1[0] + v2[0],
+                v1[1] + v2[1],
+                v1[2] + v2[2]};
+
+    return res;
+}
+
+inline float* sub(const float* v1, const float* v2) {
+    float res[] = {v1[0] - v2[0],
+                v1[1] - v2[1],
+                v1[2] - v2[2]};
+
+    return res;
+}
+
+// multiply by scalar
+inline float* scalarMult(const float* v1, const float s) {
+
+    float res[] = {v1[0]*s, v1[1]*s, v1[2]*s};
+
+    return res;
+}
+
+void trax_main()
+{
+  // Load the pointer to the frame buffer in global memory
+  const int framebuffer = GetFrameBuffer();
+
+  // Load the screen size
+  const int width = GetXRes();
+  const int height = GetYRes();
+  const int camera_ptr = GetCamera(); // load camera data from memory
+
+  const float camPos[3] = {loadf(camera_ptr), loadf(camera_ptr+1), loadf(camera_ptr+2)}; // camera position
+  const float gaze[3] = {loadf(camera_ptr+12), loadf(camera_ptr+13), loadf(camera_ptr+14)}; // gaze direction
+  float u[3] = {loadf(camera_ptr+15), loadf(camera_ptr+16), loadf(camera_ptr+17)}; // up vector
+  float v[3] = {loadf(camera_ptr+18), loadf(camera_ptr+19), loadf(camera_ptr+20)}; // right vector
+
+  const float uLen = normalize(u);
+  normalize(v);
+
+  const float aspectRatio = width * GetInvYRes();
+  const float vLen = uLen / aspectRatio;
+
+
+  const int nTriangles = GetNumTriangles();
+  const int triStart = GetStartTriangles(); // starting address of triangle array
+  const float epsilon = loadf(TRAX_EPSILON);
+
+  float tMax = epsilon;
+
+  // Iterate over all of the pixels
+  // Using atomicinc here allows your code to have only one thread execute per return value
+  for (int pixel = atomicinc(0); pixel < width * height; pixel = atomicinc(0)) {
+    // Store a color based on screen location
+    int x = pixel % height;
+    int y = pixel / width;
+
+    float xCoord = (2*uLen/width - uLen)*x;
+    float yCoord = (2*vLen/height - vLen)*y;
+
+    float tFinal = FLOAT_MAX;
+
+    float *pixV = add(add(gaze, scalarMult(u, xCoord)),scalarMult(v, yCoord));
+
+    for (int i = 0; i < nTriangles; i++) {
+        float triAddress = triStart + i * TRI_N_WORDS;
+        float v1[3] = {loadf(triAddress),loadf(triAddress+1),loadf(triAddress+2)};
+        float v2[3] = {loadf(triAddress+3),loadf(triAddress+4),loadf(triAddress+5)};
+        float v3[3] = {loadf(triAddress+6),loadf(triAddress+7),loadf(triAddress+8)};
+
+        float *e1 = sub(v1, v3); // edge 1
+        float *e2 = sub(v2, v3); // edge 2
+        float *r1 = cross(gaze, e2);
+        float denom = dot(e1, r1);
+        float invDenom = 1/denom;
+        float *s = sub(camPos, v3);
+
+        if(denom < epsilon || -denom > -epsilon) continue;
+
+        float b1 = dot(s, r1)*invDenom;
+
+        if(b1 < epsilon || b1 > 1) continue;
+
+        float *r2 = cross(s, e1);
+
+        float b2 = dot(s, r2)*invDenom;
+
+        if(b2 < epsilon || b1 + b2 > 1) continue;
+
+        float t = dot(e2, r2) * invDenom;
+
+
+        if(t < tFinal && t > epsilon) tFinal = t; //WRONG
+        if(t > tMax) tMax = t;
+    }
+
+    int colorVal = tFinal/tMax * 255;
+    // framebuffer pointer, pixel offset, red, green, blue
+    StorePixel( framebuffer, pixel, colorVal, colorVal, colorVal );
+  }
+
+}
